@@ -199,25 +199,48 @@ void Del_friend(Client* client, const char* friendName, int index)
     }
 }
 
-int delA(Client* client) //注销账号
+int delA(Client* client)
 {
+    int user_index = find_user_index(client->username);
+    if (user_index == -1) return 0;
 
-    for (int i = 0; i < data_flog; ++i) 
+    bufferevent_write(client->bev, "Your account has been successfully deleted.\n", 45);
+    // 清理所有好友列表中对此用户的引用
+    for (int i = 0; i < data_flog; ++i)
     {
-        if (strcmp(Database[i]->username, client->username) == 0) 
+        if (i == user_index) continue;
+
+        for (int j = 0; j < Database[i]->friendNUM; ++j)
         {
-            //bufferevent_write(client->bev, "Your account has been successfully deleted.\n", 45);
-            //bufferevent_write(client->bev, "Please press Enter to continue\n", 33);
-            free(Database[i]);
-            for (int j = i; j < data_flog - 1; ++j) 
+            if (Database[i]->friends[j] == Database[user_index])
             {
-                Database[j] = Database[j + 1];
+              
+                for (int k = j; k < Database[i]->friendNUM - 1; ++k)
+                {
+                    Database[i]->friends[k] = Database[i]->friends[k + 1];
+                }
+                Database[i]->friends[Database[i]->friendNUM - 1] = NULL;
+                Database[i]->friendNUM--;
+                j--; 
             }
-            data_flog--;
-            return 1;
         }
     }
-    return 0;
+
+    //设置客户端标记，表示已删除，避免event_cb重复处理
+    client->state = STATE_OFFLINE;
+    strcpy(client->username, "deleted");
+    Database[user_index]->bev = NULL;
+    free(Database[user_index]);
+
+    for (int j = user_index; j < data_flog - 1; ++j)
+    {
+        Database[j] = Database[j + 1];
+    }
+    Database[data_flog - 1] = NULL;
+    data_flog--;
+
+    printf("用户: %s 账号已成功删除。\n", client->username);
+    return 1;
 }
 
 void Help_documentation(Client* client)
@@ -367,9 +390,8 @@ int judgmentCommand(char* buf,Client* client)
         int ok = delA(client);
         if (ok)
         {
-            
             printf("user: %s Account deleted.\n", client->username);
-            bufferevent_free(client->bev);
+            
             return 1;
         }
         else
@@ -533,30 +555,41 @@ void read_cb(struct bufferevent *bev, void *arg)
     }
 }
 
-void event_cb(struct bufferevent *bev, short events, void *arg)
+void event_cb(struct bufferevent* bev, short events, void* arg)
 {
-    Client *client = (Client *)arg;
+    Client* client = (Client*)arg;
+
+    if (!client) 
+    {
+        if (bev) bufferevent_free(bev);
+        return;
+    }
 
     if (events & BEV_EVENT_EOF)
     {
-        printf("Client: %s connection closed\n",client->username);
-        
-        //bev改变
-        if (find_user_index(client->username) != -1)
+        printf("Client: %s connection closed\n", client->username);
+
+        // 只有当用户不是已删除的状态时才更新数据库
+        if (strcmp(client->username, "deleted") != 0)
         {
-            turnUserStateInServ(find_user_index(client->username), STATE_OFFLINE);
-            Database[find_user_index(client->username)]->bev = NULL;
+            int user_index = find_user_index(client->username);
+            if (user_index != -1)
+            {
+                turnUserStateInServ(user_index, STATE_OFFLINE);
+                Database[user_index]->bev = NULL;
+            }
         }
-        
     }
-    else if(events & BEV_EVENT_ERROR)
+    else if (events & BEV_EVENT_ERROR)
     {
         printf("some other error\n");
     }
 
-    // 关闭客户端连接并释放资源
-    bufferevent_free(bev);
-    // 释放该客户端占用的内存
+    if (bev) 
+    {
+        bufferevent_free(bev);
+    }
+
     free(client);
     printf("buffevent 资源已经被释放...\n");
 }
